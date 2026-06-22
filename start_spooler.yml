@@ -1,0 +1,9 @@
+---
+- hosts: all
+  gather_facts: false
+
+  tasks:
+    - name: Start Print Spooler
+      ansible.windows.win_service:
+        name: Spooler
+        state: started
