@@ -11,11 +11,7 @@
   rules:
     - name: Restart Spooler
 
-      condition: >
-  event.payload.trigger_name ==
-  'Windows: "Spooler" (Print Spooler) is not running (startup type automatic)'
-  and
-  event.payload.event_value == 1
+      condition: true
 
       action:
         run_job_template:
