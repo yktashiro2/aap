@@ -1,0 +1,19 @@
+---
+- name: Zabbix Event Rulebook
+
+  hosts: localhost
+
+  sources:
+    - ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5000
+
+  rules:
+    - name: Restart Spooler
+
+      condition: event.payload.event == "spooler_down"
+
+      action:
+        run_job_template:
+          name: start_spooler
+          organization: Default
