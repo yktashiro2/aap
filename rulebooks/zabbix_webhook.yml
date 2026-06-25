@@ -16,3 +16,4 @@
       action:
         run_workflow_template:
           name: spooler_recovery_workflow
+          organization: Default
