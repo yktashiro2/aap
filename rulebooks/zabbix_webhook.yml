@@ -14,6 +14,5 @@
       condition: true
 
       action:
-        run_job_template:
-          name: start_spooler
-          organization: Default
+        run_workflow_template:
+          name: spooler_recovery_workflow
