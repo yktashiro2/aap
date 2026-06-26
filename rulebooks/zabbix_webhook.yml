@@ -17,3 +17,8 @@
         run_workflow_template:
           name: spooler_recovery_workflow
           organization: Default
+
+          job_args:
+            extra_vars:
+              target_host: "{{ event.payload.host_host }}"
+
