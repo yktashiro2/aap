@@ -11,7 +11,11 @@
   rules:
     - name: Restart Spooler
 
-      condition: true
+      condition: >-
+      event.payload.trigger_name ==
+      'Windows: "Spooler" (Print Spooler) is not running'
+      and
+      event.payload.event_value == 1
 
       action:
         run_workflow_template:
