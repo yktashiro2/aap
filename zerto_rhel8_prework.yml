@@ -1,0 +1,238 @@
+---
+# ==============================================================================
+# zerto_rhel8_prework.yml
+# 対象: RHEL8 1台のみ(inventory_rhel.ini の rhel グループ)
+#
+# 実行例:
+#   疎通確認    : ansible rhel -i inventory_rhel.ini -m ping
+#   ドライラン  : ansible-playbook -i inventory_rhel.ini zerto_prework.yml --check --diff
+#   本実行      : ansible-playbook -i inventory_rhel.ini zerto_prework.yml                 # 再起動しない
+#   再起動込み  : ansible-playbook -i inventory_rhel.ini zerto_prework.yml -e allow_reboot=true
+#   SELinux無効 : 上記に -e selinux_state=disabled を追加(既定は permissive)
+#
+# 事前準備(初回のみ): ansible-galaxy collection install ansible.posix
+#
+# 1/6〜6/6を順に実行し、途中で失敗したらrescueでホスト名を記録して異常終了させる
+# ==============================================================================
+- name: Zerto移行前チェック(VirtIO / qemu-ga / SELinux)
+  hosts: rhel
+  become: true
+  gather_facts: true
+  vars:
+    virtio_drivers:
+      - virtio_blk
+      - virtio_scsi
+      - virtio_net
+    selinux_state: permissive
+  tasks:
+    # ----------------------------------------------------------------------
+    # 初期化
+    # ----------------------------------------------------------------------
+    - name: 結果フラグ初期化
+      ansible.builtin.set_fact:
+        virtio_failed: false
+        qemuga_failed: false
+        selinux_failed: false
+
+    # ----------------------------------------------------------------------
+    # [1/6] パッケージ導入
+    # ----------------------------------------------------------------------
+    - name: "[1/6] qemu-guest-agent と open-vm-tools を導入"
+      ansible.builtin.package:
+        name:
+          - qemu-guest-agent
+          - open-vm-tools
+        state: present
+
+    - name: "[1/6] サービスを有効化"
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+      loop:
+        - qemu-guest-agent
+        - vmtoolsd
+
+    # ----------------------------------------------------------------------
+    # [2/6] initramfsへのVirtIOドライバ登録
+    # ----------------------------------------------------------------------
+    - name: "[2/6] 現行initramfs内のVirtIOドライバを確認"
+      ansible.builtin.command:
+        cmd: "lsinitrd /boot/initramfs-{{ ansible_kernel }}.img"
+      register: initrd_dump
+      changed_when: false
+      check_mode: false
+
+    - name: "[2/6] 不足ドライバの有無を判定"
+      ansible.builtin.set_fact:
+        virtio_missing: >-
+          {{
+            virtio_drivers
+            | reject('in', initrd_dump.stdout | default(''))
+            | list
+            | length > 0
+          }}
+
+    - name: "[2/6] dracut設定ファイルを配置"
+      ansible.builtin.copy:
+        dest: /etc/dracut.conf.d/zerto-vme-drivers.conf
+        mode: "0644"
+        content: |
+          add_drivers+=" {{ virtio_drivers | join(' ') }} "
+      when: virtio_missing | bool
+
+    - name: "[2/6] initramfsをバックアップ"
+      ansible.builtin.copy:
+        src: "/boot/initramfs-{{ ansible_kernel }}.img"
+        dest: "/boot/initramfs-{{ ansible_kernel }}.img.bak"
+        remote_src: true
+        force: false
+        mode: "0600"
+      when: virtio_missing | bool
+
+    - name: "[2/6] initramfsを再生成"
+      ansible.builtin.command:
+        cmd: "dracut -f /boot/initramfs-{{ ansible_kernel }}.img {{ ansible_kernel }}"
+      when: virtio_missing | bool
+      register: dracut_run
+      changed_when: true
+
+    - name: "[2/6] dracut未実行時のダミー結果作成"
+      ansible.builtin.set_fact:
+        dracut_run:
+          skipped: true
+      when: not virtio_missing | bool
+
+    - name: "[2/6] 再生成後のinitramfsを検証"
+      ansible.builtin.command:
+        cmd: "lsinitrd /boot/initramfs-{{ ansible_kernel }}.img"
+      register: initrd_recheck
+      changed_when: false
+      when: dracut_run is not skipped
+
+    - name: "[2/6] VirtIO結果判定(dracut実施時)"
+      ansible.builtin.set_fact:
+        virtio_failed: >-
+          {{
+            virtio_drivers
+            | reject('in', initrd_recheck.stdout | default(''))
+            | list
+            | length > 0
+          }}
+      when: dracut_run is not skipped
+
+    - name: "[2/6] VirtIO結果判定(dracut不要時)"
+      ansible.builtin.set_fact:
+        virtio_failed: false
+      when: dracut_run is skipped
+
+    # ----------------------------------------------------------------------
+    # [3/6] qemu-ga
+    # ----------------------------------------------------------------------
+    - name: "[3/6] /etc/sysconfig/qemu-ga のBLACKLIST_RPC行を削除"
+      ansible.builtin.lineinfile:
+        path: /etc/sysconfig/qemu-ga
+        regexp: '^BLACKLIST_RPC='
+        state: absent
+
+    - name: "[3/6] BLACKLIST削除確認"
+      ansible.builtin.command:
+        cmd: "grep '^BLACKLIST_RPC=' /etc/sysconfig/qemu-ga"
+      register: blacklist_check
+      changed_when: false
+      failed_when: false
+
+    - name: "[3/6] qemu-ga結果判定"
+      ansible.builtin.set_fact:
+        qemuga_failed: "{{ blacklist_check.rc == 0 }}"
+
+    # ----------------------------------------------------------------------
+    # [5/6] SELinux
+    # ----------------------------------------------------------------------
+    - name: "[5/6] SELinux設定確認"
+      ansible.builtin.command:
+        cmd: "grep '^SELINUX=' /etc/selinux/config"
+      register: selinux_config_before
+      changed_when: false
+
+    - name: "[5/6] SELinuxを{{ selinux_state }}へ変更"
+      ansible.posix.selinux:
+        state: "{{ selinux_state }}"
+        policy: "targeted"
+      when:
+        - "'SELINUX=disabled' not in selinux_config_before.stdout"
+      register: selinux_result
+
+    - name: "[5/6] SELinux設定再確認"
+      ansible.builtin.command:
+        cmd: "grep '^SELINUX=' /etc/selinux/config"
+      register: selinux_config
+      changed_when: false
+
+    - name: "[5/6] SELinux結果判定"
+      ansible.builtin.set_fact:
+        selinux_failed: >-
+          {{
+            (
+              'SELINUX=permissive' not in selinux_config.stdout
+            )
+            and
+            (
+              'SELINUX=disabled' not in selinux_config.stdout
+            )
+          }}
+
+    # ----------------------------------------------------------------------
+    # [6/6] レポート出力
+    # ----------------------------------------------------------------------
+    - name: "[6/6] result_report_rhel.txt 出力"
+      delegate_to: localhost
+      ansible.builtin.lineinfile:
+        path: ./result/result_report_rhel.txt
+        create: true
+        mode: "0644"
+        line: >-
+          {{ inventory_hostname }},
+          VirtIO={{ 'NG' if virtio_failed else 'OK' }},
+          QEMU-GA={{ 'NG' if qemuga_failed else 'OK' }},
+          SELinux={{ 'NG' if selinux_failed else 'OK' }}
+
+    - name: "[6/6] result_ng_rhel.txt 出力"
+      delegate_to: localhost
+      ansible.builtin.lineinfile:
+        path: ./result/result_ng_rhel.txt
+        create: true
+        mode: "0644"
+        line: "{{ inventory_hostname }}"
+      when:
+        - virtio_failed or qemuga_failed or selinux_failed
+
+    - name: "[6/6] 結果表示"
+      ansible.builtin.debug:
+        msg:
+          - "VirtIO  : {{ 'NG' if virtio_failed else 'OK' }}"
+          - "QEMU-GA : {{ 'NG' if qemuga_failed else 'OK' }}"
+          - "SELinux : {{ 'NG' if selinux_failed else 'OK' }}"
+
+    - name: "[6/6] 総合判定"
+      ansible.builtin.fail:
+        msg: |
+          設定失敗を検出しました。
+          VirtIO  : {{ 'NG' if virtio_failed else 'OK' }}
+          QEMU-GA : {{ 'NG' if qemuga_failed else 'OK' }}
+          SELinux : {{ 'NG' if selinux_failed else 'OK' }}
+          詳細は result_report_rhel.txt を参照してください。
+      when:
+        - virtio_failed or qemuga_failed or selinux_failed
+
+    - name: "[6/6] 設定完了メッセージ"
+      ansible.builtin.debug:
+        msg: |
+          Zerto移行前設定が正常に完了しました。
+          VirtIO : OK
+          QEMU-GA : OK
+          SELinux : OK
+          result_report_rhel.txt を参照してください。
+      when:
+        - not virtio_failed
+        - not qemuga_failed
+        - not selinux_failed
