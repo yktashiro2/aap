@@ -1,0 +1,92 @@
+---
+# ==============================================================================
+# vmwaretool_uninstall_rhel8.yml
+# 対象: RHEL8(inventory_rhel.ini の rhel グループ)
+# 内容: open-vm-tools パッケージがインストールされている場合にアンインストールし、
+#       アンインストール後に再確認した上でOK/NG判定・レポート出力を行う
+# ==============================================================================
+- name: Uninstall open-vm-tools (RHEL8)
+  hosts: rhel
+  become: true
+  gather_facts: false
+
+  tasks:
+
+    - name: 結果フラグ初期化
+      ansible.builtin.set_fact:
+        uninstall_failed: false
+
+    - name: open-vm-tools の導入状況を確認
+      ansible.builtin.command:
+        cmd: "rpm -q open-vm-tools"
+      register: pkg_check
+      changed_when: false
+      failed_when: false
+
+    - name: open-vm-tools をアンインストール
+      ansible.builtin.package:
+        name: open-vm-tools
+        state: absent
+      when:
+        - pkg_check.rc == 0
+      ignore_errors: true
+
+    - name: open-vm-tools is already removed
+      ansible.builtin.debug:
+        msg: "open-vm-tools is already removed."
+      when:
+        - pkg_check.rc != 0
+
+    - name: アンインストール後の open-vm-tools 残存確認
+      ansible.builtin.command:
+        cmd: "rpm -q open-vm-tools"
+      register: pkg_recheck
+      changed_when: false
+      failed_when: false
+
+    - name: アンインストール結果判定
+      ansible.builtin.set_fact:
+        uninstall_failed: "{{ pkg_recheck.rc == 0 }}"
+
+    - name: result_report_rhel_uninstallvmtools.txt 出力
+      delegate_to: localhost
+      ansible.builtin.lineinfile:
+        path: ./result/result_report_rhel_uninstallvmtools.txt
+        create: true
+        mode: "0644"
+        line: >-
+          {{ inventory_hostname }},
+          OpenVMTools={{ 'NG' if uninstall_failed else 'OK' }}
+
+    - name: result_ng_rhel_uninstallvmtools.txt 出力
+      delegate_to: localhost
+      ansible.builtin.lineinfile:
+        path: ./result/result_ng_rhel_uninstallvmtools.txt
+        create: true
+        mode: "0644"
+        line: "{{ inventory_hostname }}"
+      when:
+        - uninstall_failed
+
+    - name: 結果表示
+      ansible.builtin.debug:
+        msg:
+          - "OpenVMTools : {{ 'NG' if uninstall_failed else 'OK' }}"
+
+    - name: 総合判定
+      ansible.builtin.fail:
+        msg: |
+          open-vm-toolsのアンインストールに失敗しました。
+          OpenVMTools : NG
+          詳細は result_report_rhel_uninstallvmtools.txt を参照してください。
+      when:
+        - uninstall_failed
+
+    - name: アンインストール完了メッセージ
+      ansible.builtin.debug:
+        msg: |
+          open-vm-toolsのアンインストール確認が正常に完了しました。
+          OpenVMTools : OK
+          result_report_rhel_uninstallvmtools.txt を参照してください。
+      when:
+        - not uninstall_failed
