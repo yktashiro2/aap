@@ -1,0 +1,108 @@
+---
+- name: Uninstall VMware Tools
+  hosts: windows
+  gather_facts: no
+
+  tasks:
+
+    - name: 結果フラグ初期化
+      ansible.builtin.set_fact:
+        uninstall_failed: false
+
+    - name: Get VMware Tools Product ID
+      ansible.windows.win_powershell:
+        script: |
+          $app = Get-ItemProperty `
+          'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+          'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' |
+          Where-Object {$_.DisplayName -eq "VMware Tools"}
+
+          if ($app) {
+            $app.PSChildName
+          }
+      register: vmtools_guid
+
+    - name: Show VMware Tools GUID
+      debug:
+        var: vmtools_guid.output
+
+    - name: Uninstall VMware Tools
+      ansible.windows.win_package:
+        product_id: "{{ vmtools_guid.output[0] }}"
+        state: absent
+      when:
+        - vmtools_guid.output | length > 0
+        - vmtools_guid.output[0] is not none
+      ignore_errors: true
+
+    - name: VMware Tools not found
+      debug:
+        msg: "VMware Tools is already removed."
+      when:
+        - vmtools_guid.output | length == 0 or
+          vmtools_guid.output[0] is none
+
+    - name: アンインストール後のVMware Tools残存確認
+      ansible.windows.win_powershell:
+        script: |
+          $app = Get-ItemProperty `
+          'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+          'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' |
+          Where-Object {$_.DisplayName -eq "VMware Tools"}
+
+          if ($app) {
+            $app.PSChildName
+          }
+      register: vmtools_recheck
+
+    - name: アンインストール結果判定
+      ansible.builtin.set_fact:
+        uninstall_failed: >-
+          {{
+            vmtools_recheck.output | length > 0
+            and
+            vmtools_recheck.output[0] is not none
+          }}
+
+    - name: result_report_windows.txt 出力
+      delegate_to: localhost
+      ansible.builtin.lineinfile:
+        path: ./result/result_report_windows.txt
+        create: true
+        mode: "0644"
+        line: >-
+          {{ inventory_hostname }},
+          VMwareTools={{ 'NG' if uninstall_failed else 'OK' }}
+
+    - name: result_ng_windows.txt 出力
+      delegate_to: localhost
+      ansible.builtin.lineinfile:
+        path: ./result/result_ng_windows.txt
+        create: true
+        mode: "0644"
+        line: "{{ inventory_hostname }}"
+      when:
+        - uninstall_failed
+
+    - name: 結果表示
+      ansible.builtin.debug:
+        msg:
+          - "VMwareTools : {{ 'NG' if uninstall_failed else 'OK' }}"
+
+    - name: 総合判定
+      ansible.builtin.fail:
+        msg: |
+          VMware Toolsのアンインストールに失敗しました。
+          VMwareTools : NG
+          詳細は result_report_windows.txt を参照してください。
+      when:
+        - uninstall_failed
+
+    - name: アンインストール完了メッセージ
+      ansible.builtin.debug:
+        msg: |
+          VMware Toolsのアンインストール確認が正常に完了しました。
+          VMwareTools : OK
+          result_report_windows.txt を参照してください。
+      when:
+        - not uninstall_failed
