@@ -6,11 +6,13 @@ zerto_rhel8_prework.yml 解説
 本Playbookは、RHEL8サーバをZerto(仮想マシンレプリケーション/移行ツール)で
 移行する前に必要な事前設定を、対象ホスト(inventory_rhel.ini の rhel グループ、
 1台のみを想定)に対して自動適用・検証するものです。
-以下の3項目を順にチェック・設定し、最後に結果をレポートします。
+以下の4項目を順にチェック・設定し、最後に結果をレポートします。
 
   1. VirtIOドライバがinitramfsに組み込まれているか(なければ組み込む)
   2. qemu-guest-agentのRPCブラックリスト解除
   3. SELinuxの状態(既定はpermissiveへ変更、disabledも選択可)
+  4. qemu-guest-agent / open-vm-toolsパッケージの導入、および
+     qemu-guest-agent / vmtoolsdサービスの有効化(enabled)状態の最終確認
 
 実行例:
   疎通確認    : ansible rhel -i inventory_rhel.ini -m ping
@@ -28,9 +30,10 @@ zerto_rhel8_prework.yml 解説
 ■ 初期化
 --------------------------------------------------------------------------------
 [結果フラグ初期化]
-  virtio_failed / qemuga_failed / selinux_failed の3つの判定フラグを
-  すべて false で初期化する。これらのフラグは各チェック工程の最後で
-  OK/NGを判定するために使われ、最終的な合否判定([6/6])で参照される。
+  virtio_failed / qemuga_failed / selinux_failed / install_failed の
+  4つの判定フラグをすべて false で初期化する。これらのフラグは各チェック
+  工程の最後でOK/NGを判定するために使われ、最終的な合否判定([6/6])で
+  参照される。
 
 --------------------------------------------------------------------------------
 ■ [1/6] パッケージ導入
@@ -148,29 +151,49 @@ zerto_rhel8_prework.yml 解説
 --------------------------------------------------------------------------------
 ■ [6/6] レポート出力
 --------------------------------------------------------------------------------
+[qemu-guest-agent / open-vm-tools の導入状態を確認]
+  command モジュールで対象ホスト上の rpm -q qemu-guest-agent / rpm -q
+  open-vm-tools をそれぞれ実行し(loop)、結果を install_pkg_check に格納する。
+  changed_when: false / failed_when: false のため、未導入(rpm -qが非0終了)
+  でもPlaybook自体は失敗させず、後続タスクでrcを見て判定する。
+
+[qemu-guest-agent / vmtoolsd の有効化状態を確認]
+  command モジュールで systemctl is-enabled qemu-guest-agent /
+  systemctl is-enabled vmtoolsd をそれぞれ実行し(loop)、結果を
+  install_svc_check に格納する。こちらも changed_when: false /
+  failed_when: false により、無効化(disabled等でrcが非0)でも
+  Playbookを失敗させない。
+
+[パッケージ導入/サービス有効化 結果判定]
+  install_pkg_check.results と install_svc_check.results それぞれについて、
+  selectattr('rc', 'ne', 0) で「終了コードが0でない(=パッケージ未導入、
+  または有効化されていない)」項目を抽出し、1件でも該当すれば install_failed
+  を true(NG)にする。これは[1/6]でインストール・有効化した内容が、
+  最終的に本当に反映されているかを確認するための工程。
+
 [result_report_rhel.txt 出力]
   delegate_to: localhost により、実行元(Ansible制御ノード)側の
   ./result/result_report_rhel.txt に、対象ホスト名と
-  VirtIO/QEMU-GA/SELinuxそれぞれのOK・NG判定を1行追記する
+  VirtIO/QEMU-GA/SELinux/Installそれぞれの OK・NG判定を1行追記する
   (create: true でファイルがなければ新規作成)。
 
 [result_ng_rhel.txt 出力]
-  3項目のいずれかが失敗(NG)している場合のみ、
+  4項目のいずれかが失敗(NG)している場合のみ、
   ./result/result_ng_rhel.txt に対象ホスト名を追記する。
   複数台に対して実行した際、NGだったホストだけを一覧できるようにするための
   ファイル(このPlaybook自体は1台のみが対象だが、複数実行の集計を想定した作り)。
 
 [結果表示]
-  debug モジュールで、VirtIO/QEMU-GA/SELinuxそれぞれのOK/NG判定結果を
-  標準出力に表示する。
+  debug モジュールで、VirtIO/QEMU-GA/SELinux/Installそれぞれの
+  OK/NG判定結果を標準出力に表示する。
 
 [総合判定]
-  3項目のいずれかがNGの場合、fail モジュールでPlaybookを異常終了させる。
+  4項目のいずれかがNGの場合、fail モジュールでPlaybookを異常終了させる。
   メッセージには各項目の判定結果と、詳細はresult_report_rhel.txtを
   参照するよう案内が表示される。
 
 [設定完了メッセージ]
-  3項目すべてがOKの場合のみ、debug モジュールで
+  4項目すべてがOKの場合のみ、debug モジュールで
   「Zerto移行前設定が正常に完了しました」という完了メッセージを表示する。
 
 ================================================================================
@@ -183,7 +206,9 @@ zerto_rhel8_prework.yml 解説
   4. [3/6] qemu-gaのBLACKLIST_RPC設定を削除し、削除できたかをOK/NG判定
      ※ ヘッダーコメントが想定する「4/6」の処理(再起動等)は本ファイルに実装なし
   5. [5/6] SELinuxを指定状態(既定permissive)へ変更し、OK/NG判定
-  6. [6/6] 結果をファイル出力・画面表示し、いずれかNGなら異常終了、
+  6. [6/6] qemu-guest-agent/open-vm-toolsの導入状態とqemu-guest-agent/
+     vmtoolsdの有効化状態を確認してOK/NG判定した上で、4項目まとめて
+     結果をファイル出力・画面表示し、いずれかNGなら異常終了、
      すべてOKなら完了メッセージを表示
 
 ================================================================================

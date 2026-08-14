@@ -33,6 +33,7 @@
         virtio_failed: false
         qemuga_failed: false
         selinux_failed: false
+        install_failed: false
 
     # ----------------------------------------------------------------------
     # [1/6] パッケージ導入
@@ -184,6 +185,35 @@
     # ----------------------------------------------------------------------
     # [6/6] レポート出力
     # ----------------------------------------------------------------------
+    - name: "[6/6] qemu-guest-agent / open-vm-tools の導入状態を確認"
+      ansible.builtin.command:
+        cmd: "rpm -q {{ item }}"
+      register: install_pkg_check
+      loop:
+        - qemu-guest-agent
+        - open-vm-tools
+      changed_when: false
+      failed_when: false
+
+    - name: "[6/6] qemu-guest-agent / vmtoolsd の有効化状態を確認"
+      ansible.builtin.command:
+        cmd: "systemctl is-enabled {{ item }}"
+      register: install_svc_check
+      loop:
+        - qemu-guest-agent
+        - vmtoolsd
+      changed_when: false
+      failed_when: false
+
+    - name: "[6/6] パッケージ導入/サービス有効化 結果判定"
+      ansible.builtin.set_fact:
+        install_failed: >-
+          {{
+            (install_pkg_check.results | selectattr('rc', 'ne', 0) | list | length > 0)
+            or
+            (install_svc_check.results | selectattr('rc', 'ne', 0) | list | length > 0)
+          }}
+
     - name: "[6/6] result_report_rhel.txt 出力"
       delegate_to: localhost
       ansible.builtin.lineinfile:
@@ -194,7 +224,8 @@
           {{ inventory_hostname }},
           VirtIO={{ 'NG' if virtio_failed else 'OK' }},
           QEMU-GA={{ 'NG' if qemuga_failed else 'OK' }},
-          SELinux={{ 'NG' if selinux_failed else 'OK' }}
+          SELinux={{ 'NG' if selinux_failed else 'OK' }},
+          Install={{ 'NG' if install_failed else 'OK' }}
 
     - name: "[6/6] result_ng_rhel.txt 出力"
       delegate_to: localhost
@@ -204,7 +235,7 @@
         mode: "0644"
         line: "{{ inventory_hostname }}"
       when:
-        - virtio_failed or qemuga_failed or selinux_failed
+        - virtio_failed or qemuga_failed or selinux_failed or install_failed
 
     - name: "[6/6] 結果表示"
       ansible.builtin.debug:
@@ -212,6 +243,7 @@
           - "VirtIO  : {{ 'NG' if virtio_failed else 'OK' }}"
           - "QEMU-GA : {{ 'NG' if qemuga_failed else 'OK' }}"
           - "SELinux : {{ 'NG' if selinux_failed else 'OK' }}"
+          - "Install : {{ 'NG' if install_failed else 'OK' }}"
 
     - name: "[6/6] 総合判定"
       ansible.builtin.fail:
@@ -220,9 +252,10 @@
           VirtIO  : {{ 'NG' if virtio_failed else 'OK' }}
           QEMU-GA : {{ 'NG' if qemuga_failed else 'OK' }}
           SELinux : {{ 'NG' if selinux_failed else 'OK' }}
+          Install : {{ 'NG' if install_failed else 'OK' }}
           詳細は result_report_rhel.txt を参照してください。
       when:
-        - virtio_failed or qemuga_failed or selinux_failed
+        - virtio_failed or qemuga_failed or selinux_failed or install_failed
 
     - name: "[6/6] 設定完了メッセージ"
       ansible.builtin.debug:
@@ -231,8 +264,10 @@
           VirtIO : OK
           QEMU-GA : OK
           SELinux : OK
+          Install : OK
           result_report_rhel.txt を参照してください。
       when:
         - not virtio_failed
         - not qemuga_failed
         - not selinux_failed
+        - not install_failed
