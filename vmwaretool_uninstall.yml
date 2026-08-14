@@ -64,20 +64,20 @@
             vmtools_recheck.output[0] is not none
           }}
 
-    - name: result_report_windows.txt 出力
+    - name: result_report_windows_uninstallvmtools.txt 出力
       delegate_to: localhost
       ansible.builtin.lineinfile:
-        path: ./result/result_report_windows.txt
+        path: ./result/result_report_windows_uninstallvmtools.txt
         create: true
         mode: "0644"
         line: >-
           {{ inventory_hostname }},
           VMwareTools={{ 'NG' if uninstall_failed else 'OK' }}
 
-    - name: result_ng_windows.txt 出力
+    - name: result_ng_windows_uninstallvmtools.txt 出力
       delegate_to: localhost
       ansible.builtin.lineinfile:
-        path: ./result/result_ng_windows.txt
+        path: ./result/result_ng_windows_uninstallvmtools.txt
         create: true
         mode: "0644"
         line: "{{ inventory_hostname }}"
@@ -94,7 +94,7 @@
         msg: |
           VMware Toolsのアンインストールに失敗しました。
           VMwareTools : NG
-          詳細は result_report_windows.txt を参照してください。
+          詳細は result_report_windows_uninstallvmtools.txt を参照してください。
       when:
         - uninstall_failed
 
@@ -103,6 +103,6 @@
         msg: |
           VMware Toolsのアンインストール確認が正常に完了しました。
           VMwareTools : OK
-          result_report_windows.txt を参照してください。
+          result_report_windows_uninstallvmtools.txt を参照してください。
       when:
         - not uninstall_failed
